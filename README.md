@@ -1,4 +1,6 @@
 # Empty Latent Image Plus
+<img width="1110" height="867" alt="ELIP" src="https://github.com/user-attachments/assets/19e1d176-1dae-439e-a61f-55a4a2f4a20c" />
+
 
 Empty Latent Image Plus is a compact ComfyUI custom node based on the core
 `Empty Latent Image` node.
