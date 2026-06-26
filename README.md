@@ -7,6 +7,17 @@ It creates an empty latent image and also outputs the current `WIDTH` and
 `HEIGHT` as INT values. This is useful when another node or workflow needs the
 same canvas size as separate width and height inputs.
 
+## Installation
+
+Clone this repository into your ComfyUI `custom_nodes` folder:
+
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/ukr8b3g-cmyk/Empty-Latent-Image-Plus.git
+```
+
+Then restart ComfyUI.
+
 ## Main Features
 
 - Creates a standard ComfyUI latent image.
