@@ -121,8 +121,7 @@ function installPlusWidgets(node) {
     oldOnSerialize?.apply(this, arguments);
   };
 
-  const swapToggle = node.addWidget("toggle", "swap W/H", false, (value) => {
-    if (!value) return;
+  const swapToggle = node.addWidget("toggle", "swap W/H", false, () => {
     const width = getWidget(node, "width");
     const height = getWidget(node, "height");
     if (!width || !height) return;

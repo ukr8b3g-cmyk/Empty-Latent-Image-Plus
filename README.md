@@ -74,10 +74,9 @@ These behave like the core ComfyUI `Empty Latent Image` node.
 
 `swap W/H` is a toggle-style control. The default value is `false`.
 
-When set to `true`, it swaps the current `width` and `height` values.
+Every toggle click swaps the current `width` and `height` values, regardless
+of whether the toggle changes from `false → true` or `true → false`.
 The `WIDTH` and `HEIGHT` outputs follow the swapped values.
-
-Changing it back to `false` does not swap the values again.
 
 Example:
 
