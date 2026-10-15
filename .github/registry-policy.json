@@ -1,0 +1,9 @@
+{
+  "node": "empty-latent-image-plus",
+  "publisher": "ukr8b3g-cmyk",
+  "repository": "https://github.com/ukr8b3g-cmyk/Empty-Latent-Image-Plus",
+  "includes": [],
+  "license": {
+    "file": "LICENSE"
+  }
+}
