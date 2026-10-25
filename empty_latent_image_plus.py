@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import torch
+import comfy.model_management
 
 try:
     from server import PromptServer
@@ -14,6 +15,36 @@ except Exception:  # pragma: no cover
 NODE_DIR = Path(__file__).resolve().parent
 PRESETS_PATH = NODE_DIR / "presets.json"
 MAX_RESOLUTION = 16384
+DEFAULT_FORMAT = "SDXL / SD1.5 (4ch)"
+LATENT_FORMATS = {
+    DEFAULT_FORMAT: (4, 8, 2),
+    "SD3 / Flux.1 / Lumina2 (16ch)": (16, 8, 2),
+    "Anima / Krea2 / Qwen Image (16ch)": (16, 8, 3),
+    "Flux.2 / MOSS-Image (128ch)": (128, 16, 2),
+    "Qwen Image 2.1 (64ch)": (64, 16, 2),
+    "Hunyuan Image 2.1 (64ch)": (64, 32, 2),
+    "Pixel-space (RGB)": (3, 1, 2),
+}
+IMAGE_FRAME_MODELS = {"anima", "krea2", "qwen_image", "joyimage", "ming_image"}
+
+
+def _model_format(model):
+    latent_format = model.get_model_object("latent_format")
+    config = model.get_model_object("model_config")
+    family = config.unet_config.get("image_model")
+    channels = latent_format.latent_channels
+    ratio = latent_format.spacial_downscale_ratio
+    dimensions = latent_format.latent_dimensions
+    profile = (channels, ratio, dimensions)
+    name = type(latent_format).__name__
+    if name.startswith(("Trellis", "Tripo", "Hunyuan3D", "SC_")):
+        raise ValueError("Empty Latent Image Plus: use the model's dedicated latent node.")
+    if dimensions == 3 and (family not in IMAGE_FRAME_MODELS or config.unet_config.get("use_additional_t_cond")):
+        raise ValueError("Empty Latent Image Plus: Auto supports still images, not video or Qwen Layered. Use a dedicated latent node.")
+    if profile not in LATENT_FORMATS.values():
+        raise ValueError(f"Empty Latent Image Plus: unsupported latent format {name} ({channels}ch, /{ratio}, {dimensions}D).")
+    temporal_ratio = latent_format.temporal_downscale_ratio if dimensions == 3 else None
+    return profile, temporal_ratio
 
 
 def _safe_int(value, default, min_value, max_value):
@@ -63,7 +94,7 @@ def _save_presets(presets):
 
 
 class EmptyLatentImagePlus:
-    """Core Empty Latent Image-compatible node plus WIDTH/HEIGHT INT outputs.
+    """Empty image latents with optional MODEL detection and WIDTH/HEIGHT outputs.
 
     Frontend-only controls implemented in web/js:
     - swap W/H toggle
@@ -79,7 +110,14 @@ class EmptyLatentImagePlus:
                 "width": ("INT", {"default": 512, "min": 16, "max": MAX_RESOLUTION, "step": 8}),
                 "height": ("INT", {"default": 512, "min": 16, "max": MAX_RESOLUTION, "step": 8}),
                 "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096, "step": 1}),
-            }
+            },
+            "optional": {
+                "latent_type": ([DEFAULT_FORMAT, "Auto", *list(LATENT_FORMATS)[1:]], {
+                    "default": DEFAULT_FORMAT,
+                    "tooltip": "MODEL connected: Auto. Otherwise select the latent family. Flux.1 also covers Chroma, Z-Image and HiDream; 4ch also covers AuraFlow.",
+                }),
+                "model": ("MODEL", {"tooltip": "Connect an upstream loader/LoRA MODEL for Auto. Do not feed back a node that depends on this node's WIDTH/HEIGHT outputs."}),
+            },
         }
 
     RETURN_TYPES = ("LATENT", "INT", "INT")
@@ -87,12 +125,38 @@ class EmptyLatentImagePlus:
     FUNCTION = "generate"
     CATEGORY = "latent/plus"
 
-    def generate(self, width, height, batch_size=1):
+    def generate(self, width, height, batch_size=1, latent_type=DEFAULT_FORMAT, model=None):
         width = _safe_int(width, 512, 16, MAX_RESOLUTION)
         height = _safe_int(height, 512, 16, MAX_RESOLUTION)
         batch_size = _safe_int(batch_size, 1, 1, 4096)
-        latent = torch.zeros([batch_size, 4, height // 8, width // 8])
-        return ({"samples": latent}, width, height)
+        legacy = model is None and latent_type == DEFAULT_FORMAT
+        temporal_ratio = None
+        if model is not None:
+            (channels, ratio, dimensions), temporal_ratio = _model_format(model)
+        elif latent_type == "Auto":
+            raise ValueError("Empty Latent Image Plus: connect MODEL for Auto, or select a manual latent type.")
+        elif latent_type in LATENT_FORMATS:
+            channels, ratio, dimensions = LATENT_FORMATS[latent_type]
+            if dimensions == 3:
+                temporal_ratio = 4
+        else:
+            raise ValueError(f"Empty Latent Image Plus: unknown latent type {latent_type!r}.")
+
+        if not legacy:
+            width = max(ratio, width // ratio * ratio)
+            height = max(ratio, height // ratio * ratio)
+        shape = [batch_size, channels]
+        if dimensions == 3:
+            shape.append(1)
+        shape.extend([height // ratio, width // ratio])
+        if legacy:
+            latent = torch.zeros(shape)
+        else:
+            latent = torch.zeros(shape, device=comfy.model_management.intermediate_device(), dtype=comfy.model_management.intermediate_dtype())
+        result = {"samples": latent, "downscale_ratio_spacial": ratio}
+        if temporal_ratio is not None:
+            result["downscale_ratio_temporal"] = temporal_ratio
+        return (result, width, height)
 
 
 NODE_CLASS_MAPPINGS = {

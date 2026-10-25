@@ -1,7 +1,7 @@
 [project]
 name = "empty-latent-image-plus"
 description = "A compact ComfyUI Empty Latent Image replacement that also outputs WIDTH and HEIGHT values."
-version = "1.0.0"
+version = "1.1.0"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = []

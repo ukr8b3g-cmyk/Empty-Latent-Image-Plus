@@ -1,4 +1,7 @@
 # Empty Latent Image Plus
+
+Version 1.1.0 adds Auto and manual latent formats. The default remains the
+original SDXL / SD1.5 format so existing workflows continue to load.
 <img width="1110" height="867" alt="ELIP" src="https://github.com/user-attachments/assets/19e1d176-1dae-439e-a61f-55a4a2f4a20c" />
 
 
@@ -30,6 +33,7 @@ Then restart ComfyUI.
 - Includes foldable `Advanced` controls.
 - Stores user presets in `presets.json`.
 - Does not include fixed model-specific presets.
+- Accepts an optional `MODEL` input for Auto detection and a `latent_type` dropdown for manual selection.
 
 ## Typical Use
 
@@ -43,26 +47,43 @@ For example, it can be used with workflows that need one shared size value for:
 - prompt or layout helper nodes
 - nodes that accept INT width and height inputs
 
-This node is model-agnostic. It is not limited to SDXL, SD1.5, or Krea-style
-workflows.
+Presets store canvas dimensions only; selecting or loading a preset does not
+change the model connection or latent format.
 
 ## Intended Compatibility
 
-This node is intended for ordinary ComfyUI workflows that can use a standard
-`Empty Latent Image`-compatible latent input.
+Branch an upstream loader (or LoRA loader) `MODEL` output into this node. A connected
+model always takes priority and switches the dropdown to **Auto**. Disconnecting
+restores the last manual choice. Explicitly choosing Auto without a model reports
+an actionable error rather than guessing from a filename.
 
-Typical targets include:
+If a downstream ModelSampling or layout node uses this node's `WIDTH` / `HEIGHT`,
+connect the MODEL **before** that downstream node, not its output. Feeding its
+output back into this node creates a graph cycle. Manual selection remains
+available when an upstream MODEL connection is inconvenient.
 
-- SD1.5 workflows
-- SDXL workflows
-- Pony-based workflows
-- Flux-based workflows
-- Chroma-based workflows
-- Qwen Image-based workflows
-- Krea2 workflows
-- other normal `Empty Latent Image`-compatible image workflows
+| Manual choice | Channels / spatial divisor | Shape | Other examples |
+|---|---|---|---|
+| SDXL / SD1.5 | 4 / 8 | B,C,H,W | Pony, AuraFlow |
+| SD3 / Flux.1 / Lumina2 | 16 / 8 | B,C,H,W | Chroma, Z-Image, HiDream |
+| Anima / Krea2 / Qwen Image | 16 / 8 | B,C,1,H,W | Original Qwen Image and Edit variants; JoyImage, MingImage via Auto |
+| Flux.2 / MOSS-Image | 128 / 16 | B,C,H,W | Flux.2 Klein, MOSS Base/SFT |
+| Qwen Image 2.1 | 64 / 16 | B,C,H,W | Qwen Image 2.1 / Turbo |
+| Hunyuan Image 2.1 | 64 / 32 | B,C,H,W | Base image model, not the dedicated refiner |
+| Pixel-space | 3 / 1 | B,C,H,W | Chroma Radiance, pixel-space image models |
 
-It does not replace dedicated video latent nodes or model-specific latent nodes.
+Auto reads the host's `latent_format` and image-model configuration. Quantization,
+LoRA patches and checkpoint filenames do not determine the geometry. It does not
+load model weights onto the GPU, change the model or select its VAE.
+
+This is a still-image node. Video (including Wan), audio, 3D objects, Qwen Layered,
+dedicated refiners and unknown formats should use their dedicated latent nodes.
+Auto reports unsupported formats rather than silently falling back to 4 channels.
+
+For Auto and non-default manual formats, non-divisible canvas dimensions round
+down to the spatial divisor (at least one latent cell). `WIDTH` and `HEIGHT` report
+the resulting dimensions. Inputs and saved presets are not rewritten. The
+unconnected original default path keeps the old clamping, shapes and INT values.
 
 ## UI Controls
 
@@ -180,6 +201,8 @@ latent/plus
 width       INT  default 512  min 16  max 16384  step 8
 height      INT  default 512  min 16  max 16384  step 8
 batch_size  INT  default 1    min 1   max 4096   step 1
+latent_type optional combo   default SDXL / SD1.5 (4ch)
+model       optional MODEL  connected model always uses Auto
 ```
 
 ### Outputs
@@ -192,13 +215,29 @@ HEIGHT  INT
 
 ### Latent Shape
 
-The backend creates the latent tensor with:
+The default backend path creates the latent tensor with:
 
 ```text
 [batch_size, 4, height // 8, width // 8]
 ```
 
 `batch_size` is clamped to a minimum of `1`.
+
+Other shapes follow the compatibility table. Spatial/temporal downscale metadata
+is included to prevent the sampler from resizing a correctly constructed latent.
+The new modes use ComfyUI's intermediate device/dtype; the original default keeps
+its previous CPU/default-dtype behavior.
+
+### Existing workflows and presets
+
+The node ID and three outputs are unchanged. Old API prompts that supply only
+width/height/batch_size remain valid. The frontend migrates old positional widget
+values in memory, including clipboard and nested subgraph loads, so the added
+dropdown does not shift the old swap/preset/advanced values. Existing links remain
+at their original indices. Workflow files are not rewritten by installation.
+
+`presets.json` remains in its old three-field format and is not replaced during
+the local update. The preset buttons and width/height swap retain their behavior.
 
 ## Backend Files
 
@@ -238,7 +277,6 @@ This node intentionally does not include:
 - SD1.5 fixed presets
 - Flux fixed presets
 - video latent replacement behavior
-- model auto-detection
 - ratio lock enabled by default
 
 The node should remain a small, general-purpose latent helper.
@@ -258,3 +296,21 @@ The node should remain a small, general-purpose latent helper.
 - `User Preset` can save, load, and delete presets.
 - `Advanced` can show or hide info controls.
 - No fixed model-specific presets are shown by default.
+
+### Local CPU verification (2026-10-25)
+
+Tests cover Auto using the host's real latent formats and source model mappings,
+manual shapes, old API calls, native Flux.2/SD3 tensor equivalence, sampler sizing,
+unsupported models, preset route round-trips and frontend workflow migration,
+connections, serialization and preset operations. They do not load real model
+weights or run image generation. Restart, actual canvas display and GPU generation
+remain user checks. Tests use existing Python / Node dependencies only.
+
+Run `python tests/test_latent_formats.py` from an installation inside ComfyUI's
+`custom_nodes`, or set `COMFYUI_ROOT` to a separate ComfyUI checkout. Run frontend
+tests with `node --test tests/test_ui.mjs`. Optionally set `ELIP_LEGACY_WORKFLOW`
+to an existing workflow JSON for the additional read-only migration check.
+
+The folding controls preserve original widget sizing when reopened. Advanced and
+User Preset repeated open/close operations and Show Info persistence have regression
+coverage. Actual canvas verification and GPU image generation remain unverified.

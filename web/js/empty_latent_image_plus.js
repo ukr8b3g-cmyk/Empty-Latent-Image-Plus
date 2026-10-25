@@ -5,6 +5,33 @@ const NODE_CLASS = "EmptyLatentImagePlus";
 const PRESETS_GET = "/empty_latent_image_plus/presets";
 const PRESETS_SAVE = "/empty_latent_image_plus/presets/save";
 const PRESETS_DELETE = "/empty_latent_image_plus/presets/delete";
+const DEFAULT_FORMAT = "SDXL / SD1.5 (4ch)";
+const FORMATS = [DEFAULT_FORMAT, "Auto", "SD3 / Flux.1 / Lumina2 (16ch)",
+  "Anima / Krea2 / Qwen Image (16ch)", "Flux.2 / MOSS-Image (128ch)",
+  "Qwen Image 2.1 (64ch)", "Hunyuan Image 2.1 (64ch)", "Pixel-space (RGB)"];
+
+function migrateNodeData(data) {
+  const values = data.widgets_values;
+  let migrated = false;
+  if (Array.isArray(values) && values.length >= 3
+      && (values.length === 3 || typeof values[3] === "boolean" || values[3] == null)
+      && (data.properties?.empty_latent_image_plus?.version ?? 1) < 2) {
+    values.splice(3, 0, DEFAULT_FORMAT);
+    migrated = true;
+  }
+  if (Array.isArray(data.inputs) && !data.inputs.some((input) => input.name === "model")) {
+    // Append so old converted width/height inputs retain their slot numbers.
+    data.inputs.push({ name: "model", type: "MODEL", link: null });
+  }
+  return migrated;
+}
+
+function migrateGraph(graph) {
+  for (const data of graph.nodes ?? []) {
+    if (data.type === NODE_CLASS) migrateNodeData(data);
+  }
+  for (const subgraph of graph.definitions?.subgraphs ?? []) migrateGraph(subgraph);
+}
 
 function getWidget(node, name) {
   return node.widgets?.find((w) => w.name === name || w.__elipName === name);
@@ -60,28 +87,20 @@ async function postJson(path, body) {
 
 function hideWidget(widget, hidden) {
   if (!widget) return;
-  if (!widget.__elipOriginalType) widget.__elipOriginalType = widget.type;
+  if (!Object.hasOwn(widget, "__elipOriginalType")) {
+    widget.__elipOriginalType = widget.type;
+    widget.__elipOriginalComputeSize = widget.computeSize;
+    widget.__elipOwnComputeSize = Object.hasOwn(widget, "computeSize");
+  }
   widget.__elipHidden = hidden;
   widget.hidden = hidden;
   widget.type = hidden ? "hidden" : widget.__elipOriginalType;
-  widget.computeSize = hidden ? (() => [0, -4]) : widget.__elipOriginalComputeSize;
-}
-
-function patchLayoutForHiddenWidgets(node) {
-  if (node.__elipLayoutPatched) return;
-  node.__elipLayoutPatched = true;
-
-  const oldComputeSize = node.computeSize?.bind(node);
-  if (oldComputeSize) {
-    node.computeSize = function(out) {
-      const widgets = this.widgets;
-      if (!widgets) return oldComputeSize(out);
-      const visibleWidgets = widgets.filter((w) => !w.__elipHidden);
-      this.widgets = visibleWidgets;
-      const size = oldComputeSize(out);
-      this.widgets = widgets;
-      return size;
-    };
+  if (hidden) {
+    widget.computeSize = () => [0, -4];
+  } else if (widget.__elipOwnComputeSize) {
+    widget.computeSize = widget.__elipOriginalComputeSize;
+  } else {
+    delete widget.computeSize;
   }
 }
 
@@ -95,13 +114,13 @@ function resizeNodeForFolding(node) {
 function installPlusWidgets(node) {
   if (node.__emptyLatentImagePlusInstalled) return;
   node.__emptyLatentImagePlusInstalled = true;
-  patchLayoutForHiddenWidgets(node);
 
   const state = Object.assign({
     presets: {},
     selected: "",
     userPresetOpen: false,
     advancedOpen: false,
+    manualFormat: DEFAULT_FORMAT,
   }, node.properties?.empty_latent_image_plus || {});
 
   const markDirty = () => node.setDirtyCanvas?.(true, true);
@@ -112,6 +131,8 @@ function installPlusWidgets(node) {
       selected: state.selected || presetSelect?.value || "",
       userPresetOpen: !!state.userPresetOpen,
       advancedOpen: !!state.advancedOpen,
+      manualFormat: state.manualFormat,
+      version: 2,
     };
   };
 
@@ -119,6 +140,7 @@ function installPlusWidgets(node) {
   node.onSerialize = function(o) {
     persistState();
     oldOnSerialize?.apply(this, arguments);
+    if (o?.properties) o.properties.empty_latent_image_plus = { ...node.properties.empty_latent_image_plus };
   };
 
   const swapToggle = node.addWidget("toggle", "swap W/H", false, () => {
@@ -217,8 +239,58 @@ function installPlusWidgets(node) {
   const advancedWidgets = [sizeStep, clampOnLoad, showInfo, infoWidget];
 
   function updateInfo() {
-    if (infoWidget) infoWidget.value = getSizeInfo(node);
+    if (infoWidget) {
+      const format = getWidget(node, "latent_type")?.value || DEFAULT_FORMAT;
+      infoWidget.value = `${getSizeInfo(node)} | ${format}`;
+    }
   }
+
+  function syncModelConnection() {
+    const format = getWidget(node, "latent_type");
+    if (!format) return;
+    const connected = node.inputs?.some((input) => input.name === "model" && input.link != null);
+    if (connected) {
+      if (!format.disabled && format.value !== "Auto" && FORMATS.includes(format.value)) state.manualFormat = format.value;
+      format.value = "Auto";
+    } else if (format.disabled) {
+      format.value = FORMATS.includes(state.manualFormat) && state.manualFormat !== "Auto" ? state.manualFormat : DEFAULT_FORMAT;
+    }
+    format.disabled = !!connected;
+    persistState();
+    updateInfo();
+    markDirty();
+  }
+
+  const format = getWidget(node, "latent_type");
+  if (format) {
+    const oldCallback = format.callback;
+    format.callback = function(value) {
+      if (!format.disabled && value !== "Auto" && FORMATS.includes(value)) state.manualFormat = value;
+      oldCallback?.apply(this, arguments);
+      syncModelConnection();
+    };
+  }
+
+  const oldOnConnectionsChange = node.onConnectionsChange;
+  node.onConnectionsChange = function(type, slot, connected) {
+    oldOnConnectionsChange?.apply(this, arguments);
+    if (!app.configuringGraph && type === 1 && this.inputs?.[slot]?.name === "model") syncModelConnection();
+  };
+
+  const oldOnConfigure = node.onConfigure;
+  node.onConfigure = function(data) {
+    if (migrateNodeData(data) && Array.isArray(data.widgets_values)) {
+      data.widgets_values.forEach((value, i) => {
+        if (this.widgets?.[i]) this.widgets[i].value = value;
+      });
+    }
+    if (!this.inputs?.some((input) => input.name === "model")) this.addInput("model", "MODEL");
+    oldOnConfigure?.apply(this, arguments);
+    Object.assign(state, this.properties?.empty_latent_image_plus || {});
+    // A workflow already saved in Auto must keep its remembered manual mode.
+    syncModelConnection();
+    applyFolding();
+  };
 
   function applyFolding() {
     userFold.name = `${state.userPresetOpen ? "▼" : "▶"} User Preset`;
@@ -269,12 +341,16 @@ function installPlusWidgets(node) {
     }
   }
 
+  syncModelConnection();
   applyFolding();
   refreshPresetList();
 }
 
 app.registerExtension({
   name: "empty-latent-image-plus.ui",
+  beforeConfigureGraph(graphData) {
+    migrateGraph(graphData);
+  },
   nodeCreated(node) {
     if (node.comfyClass === NODE_CLASS) {
       installPlusWidgets(node);
