@@ -62,6 +62,38 @@ class APIAndReleaseTests(unittest.TestCase):
             with self.assertRaises(urllib.error.URLError):
                 release.get_json("https://api.comfy.org/test", absent=True)
 
+    def test_exact_missing_node_response_is_absence_only_on_node_endpoint(self):
+        body = b'{"error":"","message":"Node not found"}'
+        node_url = "https://api.comfy.org/nodes/example-node"
+        error = urllib.error.HTTPError(node_url, 404, "missing", {}, io.BytesIO(body))
+        with patch.object(release.urllib.request, "urlopen", side_effect=error):
+            self.assertIsNone(release.get_json(node_url, absent=True))
+        for url in [node_url + "/versions/1.2.3", node_url + "?other=1",
+                    "https://api.github.com/nodes/example-node", "https://api.comfy.org/test"]:
+            error = urllib.error.HTTPError(url, 404, "missing", {}, io.BytesIO(body))
+            with self.subTest(url=url), patch.object(release.urllib.request, "urlopen", side_effect=error):
+                with self.assertRaisesRegex(ValueError, "Unexpected Registry absence"):
+                    release.get_json(url, absent=True)
+
+    def test_missing_node_message_does_not_allow_other_errors(self):
+        url = "https://api.comfy.org/nodes/example-node"
+        for status, body, absent in [(403, b'{"error":"","message":"Node not found"}', True),
+                                     (404, b'{"message":"Node not found"}', True),
+                                     (404, b'{"error":"unauthorized","message":"Node not found"}', True),
+                                     (404, b'{"error":"","message":"Node not found"}', False)]:
+            error = urllib.error.HTTPError(url, status, "failed", {}, io.BytesIO(body))
+            with self.subTest(status=status, body=body, absent=absent), patch.object(release.urllib.request, "urlopen", side_effect=error):
+                with self.assertRaises(ValueError):
+                    release.get_json(url, absent=absent)
+
+    def test_live_registry_absence_shapes_allow_initial_publication(self):
+        base = "https://api.comfy.org/nodes/" + POLICY["node"]
+        errors = [urllib.error.HTTPError(base, 404, "missing", {}, io.BytesIO(b'{"error":"","message":"Node not found"}')),
+                  urllib.error.HTTPError(base + "/versions/1.2.3", 404, "missing", {}, io.BytesIO(b"{}"))]
+        with patch.object(release.urllib.request, "urlopen", side_effect=errors) as opened:
+            self.assertTrue(release.registry_preflight(POLICY, "1.2.3"))
+            self.assertEqual(opened.call_count, 2)
+
     def test_github_credential_cannot_be_sent_to_registry(self):
         with patch.object(release.urllib.request, "urlopen") as opened:
             with self.assertRaises(ValueError):
