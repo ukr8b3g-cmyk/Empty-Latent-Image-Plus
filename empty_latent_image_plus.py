@@ -55,21 +55,13 @@ def _safe_int(value, default, min_value, max_value):
     return max(min_value, min(max_value, value))
 
 
-def _round_to_step(value, step=8):
-    value = _safe_int(value, 512, 16, MAX_RESOLUTION)
-    step = _safe_int(step, 8, 1, 1024)
-    return max(16, min(MAX_RESOLUTION, int(round(value / step) * step)))
-
-
 def _load_presets():
-    if not PRESETS_PATH.exists():
-        PRESETS_PATH.write_text("{}\n", encoding="utf-8")
     try:
-        raw = json.loads(PRESETS_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        raw = {}
-    if not isinstance(raw, dict):
+        raw = json.loads(PRESETS_PATH.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
         return {}
+    if not isinstance(raw, dict):
+        raise ValueError("Preset data must be a JSON object")
 
     presets = {}
     for name, item in raw.items():
@@ -79,8 +71,8 @@ def _load_presets():
         if not clean_name:
             continue
         presets[clean_name] = {
-            "width": _round_to_step(item.get("width"), 8),
-            "height": _round_to_step(item.get("height"), 8),
+            "width": _safe_int(item.get("width"), 512, 16, MAX_RESOLUTION),
+            "height": _safe_int(item.get("height"), 512, 16, MAX_RESOLUTION),
             "batch_size": _safe_int(item.get("batch_size"), 1, 1, 4096),
         }
     return presets
@@ -91,6 +83,13 @@ def _save_presets(presets):
         json.dumps(presets, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def _preset_error(error):
+    return web.json_response({
+        "ok": False,
+        "error": f"Cannot read or update presets.json: {error}. Check the file and its permissions before retrying.",
+    }, status=500)
 
 
 class EmptyLatentImagePlus:
@@ -171,7 +170,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 if PromptServer is not None and web is not None:
     @PromptServer.instance.routes.get("/empty_latent_image_plus/presets")
     async def empty_latent_image_plus_get_presets(request):
-        return web.json_response(_load_presets())
+        try:
+            return web.json_response(_load_presets())
+        except (OSError, ValueError) as error:
+            return _preset_error(error)
 
     @PromptServer.instance.routes.post("/empty_latent_image_plus/presets/save")
     async def empty_latent_image_plus_save_preset(request):
@@ -180,21 +182,27 @@ if PromptServer is not None and web is not None:
         if not name:
             return web.json_response({"ok": False, "error": "Preset name is required"}, status=400)
 
-        presets = _load_presets()
-        presets[name] = {
-            "width": _round_to_step(body.get("width"), 8),
-            "height": _round_to_step(body.get("height"), 8),
-            "batch_size": _safe_int(body.get("batch_size"), 1, 1, 4096),
-        }
-        _save_presets(presets)
+        try:
+            presets = _load_presets()
+            presets[name] = {
+                "width": _safe_int(body.get("width"), 512, 16, MAX_RESOLUTION),
+                "height": _safe_int(body.get("height"), 512, 16, MAX_RESOLUTION),
+                "batch_size": _safe_int(body.get("batch_size"), 1, 1, 4096),
+            }
+            _save_presets(presets)
+        except (OSError, ValueError) as error:
+            return _preset_error(error)
         return web.json_response({"ok": True, "presets": presets})
 
     @PromptServer.instance.routes.post("/empty_latent_image_plus/presets/delete")
     async def empty_latent_image_plus_delete_preset(request):
         body = await request.json()
         name = str(body.get("name", "")).strip()
-        presets = _load_presets()
-        if name in presets:
-            del presets[name]
-            _save_presets(presets)
+        try:
+            presets = _load_presets()
+            if name in presets:
+                del presets[name]
+                _save_presets(presets)
+        except (OSError, ValueError) as error:
+            return _preset_error(error)
         return web.json_response({"ok": True, "presets": presets})

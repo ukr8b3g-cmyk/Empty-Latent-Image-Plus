@@ -72,8 +72,12 @@ function getSizeInfo(node) {
 
 async function fetchPresets() {
   const res = await api.fetchApi(PRESETS_GET);
-  if (!res.ok) return {};
-  return await res.json();
+  const result = await res.json();
+  if (!res.ok) {
+    alert(result.error || "Unable to read presets.json.");
+    return null;
+  }
+  return result;
 }
 
 async function postJson(path, body) {
@@ -82,7 +86,12 @@ async function postJson(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return await res.json();
+  const result = await res.json();
+  if (!res.ok || result.ok === false) {
+    alert(result.error || "Unable to update presets.json.");
+    return null;
+  }
+  return result;
 }
 
 function hideWidget(widget, hidden) {
@@ -181,7 +190,7 @@ function installPlusWidgets(node) {
       height: getWidget(node, "height")?.value,
       batch_size: Math.max(1, asInt(getWidget(node, "batch_size")?.value, 1)),
     };
-    await postJson(PRESETS_SAVE, body);
+    if (!await postJson(PRESETS_SAVE, body)) return;
     presetSelect.value = name;
     state.selected = name;
     await refreshPresetList();
@@ -208,7 +217,7 @@ function installPlusWidgets(node) {
   const deleteBtn = node.addWidget("button", "Delete", null, async () => {
     const name = presetSelect.value || state.selected;
     if (!name) return;
-    await postJson(PRESETS_DELETE, { name });
+    if (!await postJson(PRESETS_DELETE, { name })) return;
     await refreshPresetList();
   });
   deleteBtn.__elipName = "preset_delete";
@@ -304,7 +313,9 @@ function installPlusWidgets(node) {
   }
 
   async function refreshPresetList() {
-    state.presets = await fetchPresets();
+    const presets = await fetchPresets();
+    if (presets === null) return;
+    state.presets = presets;
     const names = Object.keys(state.presets).sort((a, b) => a.localeCompare(b));
     const values = names.length ? names : [""];
     presetSelect.options.values = values;

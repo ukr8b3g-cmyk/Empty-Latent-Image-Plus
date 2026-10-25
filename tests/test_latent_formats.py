@@ -213,6 +213,56 @@ class Tests(unittest.TestCase):
     def test_cpu_only(self):
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_bom_presets_survive_save_and_delete(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(elip, "PRESETS_PATH", Path(directory)/"presets.json"):
+            original = {"日本語": {"width": 1001, "height": 1003, "batch_size": 2}}
+            elip.PRESETS_PATH.write_text(json.dumps(original), encoding="utf-8-sig")
+            self.assertEqual(elip._load_presets(), original)
+            class Request:
+                async def json(self):
+                    return {"name": "new", "width": 1007, "height": 1011, "batch_size": 3}
+            for action in ("save", "delete"):
+                response = asyncio.run(routes["POST", f"/empty_latent_image_plus/presets/{action}"](Request()))
+                self.assertEqual(response.status, 200)
+                self.assertEqual(elip._load_presets()["日本語"], original["日本語"])
+                if action == "save":
+                    self.assertEqual(elip._load_presets()["new"], {"width": 1007, "height": 1011, "batch_size": 3})
+
+    def test_unreadable_presets_block_all_routes_without_overwrite(self):
+        class Request:
+            async def json(self):
+                return {"name": "keep", "width": 1024, "height": 1024}
+        with tempfile.TemporaryDirectory() as directory, patch.object(elip, "PRESETS_PATH", Path(directory)/"presets.json"):
+            for content in (b'{"keep":', b'[]', b'null', b'\xff\xfe'):
+                for key in routes:
+                    with self.subTest(content=content, route=key):
+                        elip.PRESETS_PATH.write_bytes(content)
+                        response = asyncio.run(routes[key](Request()))
+                        self.assertEqual(response.status, 500)
+                        self.assertFalse(json.loads(response.text)["ok"])
+                        self.assertIn("presets.json", json.loads(response.text)["error"])
+                        self.assertEqual(elip.PRESETS_PATH.read_bytes(), content)
+            content = b'{"keep":{"width":1001,"height":1003,"batch_size":1}}'
+            elip.PRESETS_PATH.write_bytes(content)
+            for key in routes:
+                with self.subTest(route=key), patch.object(Path, "read_text", side_effect=PermissionError("read denied")):
+                    response = asyncio.run(routes[key](Request()))
+                    self.assertEqual(response.status, 500)
+                self.assertEqual(elip.PRESETS_PATH.read_bytes(), content)
+
+    def test_missing_presets_initialize_on_save_and_preserve_dimensions(self):
+        class Request:
+            async def json(self):
+                return {"name": "odd", "width": 1001, "height": 1003, "batch_size": 2}
+        with tempfile.TemporaryDirectory() as directory, patch.object(elip, "PRESETS_PATH", Path(directory)/"presets.json"):
+            response = asyncio.run(routes["GET", "/empty_latent_image_plus/presets"](Request()))
+            self.assertEqual(json.loads(response.text), {})
+            response = asyncio.run(routes["POST", "/empty_latent_image_plus/presets/save"](Request()))
+            self.assertEqual(response.status, 200)
+            expected = {"odd": {"width": 1001, "height": 1003, "batch_size": 2}}
+            self.assertEqual(elip._load_presets(), expected)
+            self.assertEqual(json.loads(elip.PRESETS_PATH.read_text(encoding="utf-8")), expected)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

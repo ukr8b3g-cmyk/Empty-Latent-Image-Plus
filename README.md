@@ -1,6 +1,9 @@
 # Empty Latent Image Plus
 
-Version 1.1.0 adds Auto and manual latent formats. The default remains the
+Version 1.1.1 fixes BOM preset loading, prevents changes after preset read errors,
+and preserves saved dimensions when Clamp on Load is off.
+
+Version 1.1.0 added Auto and manual latent formats. The default remains the
 original SDXL / SD1.5 format so existing workflows continue to load.
 <img width="1110" height="867" alt="ELIP" src="https://github.com/user-attachments/assets/19e1d176-1dae-439e-a61f-55a4a2f4a20c" />
 
@@ -49,6 +52,14 @@ For example, it can be used with workflows that need one shared size value for:
 
 Presets store canvas dimensions only; selecting or loading a preset does not
 change the model connection or latent format.
+
+Presets retain integer dimensions without rounding to a multiple of eight.
+`Clamp on Load` rounds only when enabled, using `Size Step`; disabling it loads
+the saved dimensions unchanged. Model-specific alignment during generation is
+separate and does not rewrite the preset.
+
+UTF-8 presets with or without a BOM are supported. Invalid JSON or a read error
+blocks preset changes and displays an error instead of overwriting the file.
 
 ## Intended Compatibility
 

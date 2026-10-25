@@ -12,10 +12,14 @@ const clone = (v) => JSON.parse(JSON.stringify(v));
 let extension;
 const app = { configuringGraph: false, registerExtension: (value) => { extension = value; } };
 const requests = [];
+const alerts = [];
+let failure = null;
 let presets = { portrait: { width: 1024, height: 1344, batch_size: 1 } };
 const context = vm.createContext({
   app,
+  alert: (message) => alerts.push(message),
   api: { async fetchApi(path, options) {
+    if (failure) return { ok: false, json: async () => ({ ok: false, error: failure }) };
     if (options) {
       const body = JSON.parse(options.body);
       requests.push({ path, body });
@@ -266,4 +270,49 @@ test("Show Info remains hidden when disabled across Advanced collapse and reload
   restored.configure(node.serialize());
   assert.equal(restored.widget("info").hidden, true);
   assert.equal(restored.widget("size_step").hidden, false);
+});
+
+test("Clamp OFF loads exact dimensions and ON uses the selected step without changing stored data", async () => {
+  presets.odd = { width: 1001, height: 1003, batch_size: 2 };
+  const node = new Node();
+  await new Promise((resolve) => setImmediate(resolve));
+  node.choose("Pixel-space (RGB)");
+  node.widget("preset_select").value = "odd";
+  node.widget("clamp_on_load").value = false;
+  node.widget("preset_load").callback();
+  assert.deepEqual([node.widget("width").value, node.widget("height").value], [1001, 1003]);
+  node.widget("preset_name").value = "odd_saved";
+  await node.widget("preset_save").callback();
+  assert.deepEqual([requests.at(-1).body.width, requests.at(-1).body.height], [1001, 1003]);
+  node.widget("clamp_on_load").value = true;
+  for (const [step, expected] of [["8", [1000, 1000]], ["16", [1008, 1008]], ["64", [1024, 1024]]]) {
+    node.widget("size_step").value = step;
+    node.widget("preset_load").callback();
+    assert.deepEqual([node.widget("width").value, node.widget("height").value], expected);
+  }
+  assert.deepEqual(presets.odd_saved, { width: 1001, height: 1003, batch_size: 2 });
+  node.widget("clamp_on_load").value = false;
+  node.widget("preset_load").callback();
+  assert.deepEqual([node.widget("width").value, node.widget("height").value], [1001, 1003]);
+});
+
+test("preset API errors are shown and failed saves/deletes preserve the current selection", async () => {
+  const node = new Node();
+  await new Promise((resolve) => setImmediate(resolve));
+  const selection = node.widget("preset_select").value;
+  const before = clone(presets);
+  const alertCount = alerts.length;
+  failure = "Cannot read or update presets.json: invalid JSON";
+  try {
+    node.widget("preset_name").value = "failed_save";
+    await node.widget("preset_save").callback();
+    await node.widget("preset_delete").callback();
+    assert.equal(node.widget("preset_select").value, selection);
+    assert.deepEqual(presets, before);
+    new Node();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(alerts.slice(alertCount), [failure, failure, failure]);
+  } finally {
+    failure = null;
+  }
 });
