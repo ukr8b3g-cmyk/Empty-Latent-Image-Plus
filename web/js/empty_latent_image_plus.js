@@ -102,8 +102,10 @@ function hideWidget(widget, hidden) {
     widget.__elipOwnComputeSize = Object.hasOwn(widget, "computeSize");
   }
   widget.__elipHidden = hidden;
-  widget.hidden = hidden;
+  // Restore the type BEFORE clearing hidden. Modern BaseWidget restores its
+  // registration-time hidden option when leaving a legacy hiding type.
   widget.type = hidden ? "hidden" : widget.__elipOriginalType;
+  widget.hidden = hidden;
   if (hidden) {
     widget.computeSize = () => [0, -4];
   } else if (widget.__elipOwnComputeSize) {
@@ -302,8 +304,14 @@ function installPlusWidgets(node) {
   };
 
   function applyFolding() {
-    userFold.name = `${state.userPresetOpen ? "▼" : "▶"} User Preset`;
-    advancedFold.name = `${state.advancedOpen ? "▼" : "▶"} Advanced`;
+    // Modern widget names are store identities. Change the display label only;
+    // renaming during pointer dispatch can invalidate the active widget lookup.
+    for (const [widget, title, open] of [[userFold, "User Preset", state.userPresetOpen],
+      [advancedFold, "Advanced", state.advancedOpen]]) {
+      const label = `${open ? "▼" : "▶"} ${title}`;
+      if ("label" in widget) widget.label = label;
+      else widget.name = label;
+    }
     for (const w of userWidgets) hideWidget(w, !state.userPresetOpen);
     for (const w of advancedWidgets) hideWidget(w, !state.advancedOpen || (w === infoWidget && !showInfo.value));
     persistState();

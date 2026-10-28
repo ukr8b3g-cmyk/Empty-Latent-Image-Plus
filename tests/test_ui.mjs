@@ -32,7 +32,8 @@ const context = vm.createContext({
 vm.runInContext(source.replace(/^import .* from .*;\r?\n/gm, ""), context);
 
 class Node {
-  constructor() {
+  constructor(modern = false) {
+    this.modern = modern;
     this.comfyClass = "EmptyLatentImagePlus";
     this.inputs = [{ name: "model", type: "MODEL", link: null }];
     this.properties = {};
@@ -47,10 +48,31 @@ class Node {
   addInput(name, type) { this.inputs.push({ name, type, link: null }); }
   addWidget(type, name, value, callback, options = {}) {
     const widget = { type, name, value, callback, options, computeSize: () => [0, 20] };
+    if (this.modern) {
+      // ComfyUI BaseWidget's legacy visibility shim: hidden writes made while
+      // type='hidden' do not clear rawOptions.hidden. Restoring the type
+      // reapplies that saved flag. This reproduced the real expand failure.
+      let rawHidden = false;
+      let hidden = false;
+      let widgetType = type;
+      Object.defineProperties(widget, {
+        label: { configurable: true, writable: true, value: undefined },
+        hidden: { configurable: true, get: () => hidden, set: (v) => {
+          hidden = !!v;
+          if (widgetType !== "hidden") rawHidden = !!v;
+        } },
+        type: { configurable: true, get: () => widgetType, set: (v) => {
+          const wasHidden = widgetType === "hidden";
+          widgetType = v;
+          if (v === "hidden") hidden = true;
+          else if (wasHidden) hidden = rawHidden;
+        } },
+      });
+    }
     this.widgets.push(widget);
     return widget;
   }
-  computeSize() { return [340, this.widgets.reduce((height, widget) => height + (widget.computeSize?.()[1] ?? 20) + 4, 40)]; }
+  computeSize() { return [340, this.widgets.reduce((height, widget) => this.modern && widget.hidden ? height : height + (widget.computeSize?.()[1] ?? 20) + 4, 40)]; }
   setSize(size) { this.size = size; }
   setDirtyCanvas() {}
   widget(name) { return this.widgets.find((w) => w.name === name || w.__elipName === name); }
@@ -255,6 +277,38 @@ test("Advanced and User Preset repeatedly expand with original sizing and stable
       assert.equal(node.widgets, widgets);
     }
   }
+});
+
+test("modern visibility shim keeps both fold headers stable and all children reachable", () => {
+  const node = new Node(true);
+  const names = node.widgets.map((w) => w.name);
+  const widths = [node.widget("width").value, node.widget("height").value];
+  for (let cycle = 0; cycle < 20; cycle++) {
+    for (const [fold, child] of [["user_preset_fold", "preset_select"], ["advanced_fold", "size_step"]]) {
+      const header = node.widget(fold);
+      const before = node.size[1];
+      header.callback();
+      assert.equal(node.widget(child).hidden, false);
+      assert.ok(node.size[1] > before);
+      assert.ok(header.label.startsWith("▼"));
+      assert.equal(header.hidden, false);
+      header.callback();
+      assert.equal(node.widget(child).hidden, true);
+      assert.equal(node.size[1], before);
+      assert.ok(header.label.startsWith("▶"));
+    }
+  }
+  node.widget("user_preset_fold").callback();
+  node.widget("advanced_fold").callback();
+  const restored = new Node(true);
+  restored.configure(node.serialize());
+  assert.equal(restored.widget("preset_select").hidden, false);
+  assert.equal(restored.widget("size_step").hidden, false);
+  assert.deepEqual(node.widgets.map((w) => w.name), names);
+  assert.deepEqual([node.widget("width").value, node.widget("height").value], widths);
+  restored.widget("advanced_fold").callback();
+  assert.equal(restored.widget("size_step").hidden, true);
+  assert.equal(restored.widget("preset_select").hidden, false);
 });
 
 test("Show Info remains hidden when disabled across Advanced collapse and reload", () => {
