@@ -133,6 +133,8 @@ function installPlusWidgets(node) {
     advancedOpen: false,
     manualFormat: DEFAULT_FORMAT,
   }, node.properties?.empty_latent_image_plus || {});
+  let presetRevision = 0;
+  let presetBusy = false;
 
   const markDirty = () => node.setDirtyCanvas?.(true, true);
 
@@ -192,10 +194,7 @@ function installPlusWidgets(node) {
       height: getWidget(node, "height")?.value,
       batch_size: Math.max(1, asInt(getWidget(node, "batch_size")?.value, 1)),
     };
-    if (!await postJson(PRESETS_SAVE, body)) return;
-    presetSelect.value = name;
-    state.selected = name;
-    await refreshPresetList();
+    await mutatePresets(PRESETS_SAVE, body, name);
   });
   saveBtn.__elipName = "preset_save";
 
@@ -219,8 +218,7 @@ function installPlusWidgets(node) {
   const deleteBtn = node.addWidget("button", "Delete", null, async () => {
     const name = presetSelect.value || state.selected;
     if (!name) return;
-    if (!await postJson(PRESETS_DELETE, { name })) return;
-    await refreshPresetList();
+    await mutatePresets(PRESETS_DELETE, { name });
   });
   deleteBtn.__elipName = "preset_delete";
 
@@ -321,8 +319,32 @@ function installPlusWidgets(node) {
   }
 
   async function refreshPresetList() {
+    const revision = ++presetRevision;
     const presets = await fetchPresets();
-    if (presets === null) return;
+    if (presets === null || revision !== presetRevision || presetBusy) return;
+    applyPresetList(presets);
+  }
+
+  async function mutatePresets(path, body, selected) {
+    if (presetBusy) return;
+    presetBusy = true;
+    ++presetRevision;
+    saveBtn.disabled = deleteBtn.disabled = true;
+    try {
+      const result = await postJson(path, body);
+      if (!result) return;
+      if (selected !== undefined) {
+        presetSelect.value = selected;
+        state.selected = selected;
+      }
+      applyPresetList(result.presets);
+    } finally {
+      presetBusy = false;
+      saveBtn.disabled = deleteBtn.disabled = false;
+    }
+  }
+
+  function applyPresetList(presets) {
     state.presets = presets;
     const names = Object.keys(state.presets).sort((a, b) => a.localeCompare(b));
     const values = names.length ? names : [""];

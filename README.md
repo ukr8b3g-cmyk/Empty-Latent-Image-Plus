@@ -250,6 +250,15 @@ at their original indices. Workflow files are not rewritten by installation.
 `presets.json` remains in its old three-field format and is not replaced during
 the local update. The preset buttons and width/height swap retain their behavior.
 
+Preset saves and deletes now write a temporary file in the same directory, flush
+it, and replace `presets.json` only after the write completes. A write or replace
+failure keeps the previous file. This protects interrupted writes, alongside the
+existing BOM support and refusal to overwrite unreadable preset data.
+
+The UI applies the preset list returned by save/delete directly, ignores older
+pending reads, and disables Save/Delete while a change is in progress on that
+node. Preset fields, saved selections and workflow migration remain unchanged.
+
 ## Backend Files
 
 ```text

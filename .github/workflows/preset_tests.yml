@@ -1,0 +1,26 @@
+name: Preset and UI regression tests
+on:
+  push:
+    branches: [main]
+    paths: ['empty_latent_image_plus.py', 'web/**', 'tests/**', '.github/workflows/preset_tests.yml']
+  pull_request:
+    paths: ['empty_latent_image_plus.py', 'web/**', 'tests/**', '.github/workflows/preset_tests.yml']
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Preset write failure checks (no ComfyUI or Torch)
+        run: python -B tests/test_preset_storage.py
+      - name: Workflow, folding and preset response checks
+        run: node --test tests/test_ui.mjs
+      - name: JavaScript syntax
+        run: node --check web/js/empty_latent_image_plus.js

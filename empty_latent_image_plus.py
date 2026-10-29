@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import tempfile
 
 import torch
 import comfy.model_management
@@ -79,10 +80,21 @@ def _load_presets():
 
 
 def _save_presets(presets):
-    PRESETS_PATH.write_text(
-        json.dumps(presets, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    content = json.dumps(presets, ensure_ascii=False, indent=2) + "\n"
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=PRESETS_PATH.parent,
+            prefix=f".{PRESETS_PATH.name}.", suffix=".tmp", delete=False,
+        ) as file:
+            temporary = Path(file.name)
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, PRESETS_PATH)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _preset_error(error):

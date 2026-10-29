@@ -14,11 +14,13 @@ const app = { configuringGraph: false, registerExtension: (value) => { extension
 const requests = [];
 const alerts = [];
 let failure = null;
+let fetchOverride = null;
 let presets = { portrait: { width: 1024, height: 1344, batch_size: 1 } };
 const context = vm.createContext({
   app,
   alert: (message) => alerts.push(message),
   api: { async fetchApi(path, options) {
+    if (fetchOverride) return fetchOverride(path, options);
     if (failure) return { ok: false, json: async () => ({ ok: false, error: failure }) };
     if (options) {
       const body = JSON.parse(options.body);
@@ -26,7 +28,7 @@ const context = vm.createContext({
       if (path.endsWith("/save")) presets[body.name] = { width: body.width, height: body.height, batch_size: body.batch_size };
       if (path.endsWith("/delete")) delete presets[body.name];
     }
-    return { ok: true, json: async () => clone(presets) };
+    return { ok: true, json: async () => options ? { ok: true, presets: clone(presets) } : clone(presets) };
   } },
 });
 vm.runInContext(source.replace(/^import .* from .*;\r?\n/gm, ""), context);
@@ -369,4 +371,119 @@ test("preset API errors are shown and failed saves/deletes preserve the current 
   } finally {
     failure = null;
   }
+});
+
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+const reply = (data) => ({ ok: true, json: async () => clone(data) });
+
+test("delayed initial GET cannot replace a saved preset; POST supplies the updated list", async () => {
+  let resolveInitial;
+  let reads = 0;
+  const old = { portrait: { width: 512, height: 768, batch_size: 1 } };
+  const fresh = { portrait: { width: 1024, height: 1344, batch_size: 1 } };
+  fetchOverride = (path, options) => {
+    if (options) return reply({ ok: true, presets: fresh });
+    if (++reads === 1) return new Promise((resolve) => { resolveInitial = resolve; });
+    return reply(fresh);
+  };
+  try {
+    const node = new Node();
+    node.widget("preset_name").value = "portrait";
+    await node.widget("preset_save").callback();
+    node.widget("preset_load").callback();
+    assert.deepEqual([node.widget("width").value, node.widget("height").value], [1024, 1344]);
+    resolveInitial(reply(old));
+    await tick();
+    node.widget("preset_load").callback();
+    assert.deepEqual([node.widget("width").value, node.widget("height").value], [1024, 1344]);
+    assert.equal(reads, 1);
+  } finally { fetchOverride = null; }
+});
+
+test("delayed initial GET cannot resurrect a deleted preset", async () => {
+  let resolveInitial;
+  let reads = 0;
+  fetchOverride = (path, options) => {
+    if (options) return reply({ ok: true, presets: {} });
+    if (++reads === 1) return new Promise((resolve) => { resolveInitial = resolve; });
+    return reply({});
+  };
+  try {
+    const node = new Node();
+    node.widget("preset_select").value = "portrait";
+    await node.widget("preset_delete").callback();
+    resolveInitial(reply({ portrait: { width: 512, height: 768, batch_size: 1 } }));
+    await tick();
+    assert.deepEqual(clone(node.widget("preset_select").options.values), [""]);
+    assert.equal(node.widget("preset_select").value, "");
+    assert.equal(reads, 1);
+  } finally { fetchOverride = null; }
+});
+
+test("one node serializes save/delete operations and restores button availability", async () => {
+  let complete;
+  let writes = 0;
+  fetchOverride = (path, options) => {
+    if (!options) return reply({});
+    writes++;
+    return new Promise((resolve) => { complete = resolve; });
+  };
+  try {
+    const node = new Node();
+    await tick();
+    node.widget("preset_name").value = "new";
+    const saving = node.widget("preset_save").callback();
+    node.widget("preset_select").value = "existing";
+    node.widget("preset_save").callback();
+    node.widget("preset_delete").callback();
+    assert.equal(writes, 1);
+    assert.equal(node.widget("preset_save").disabled, true);
+    assert.equal(node.widget("preset_delete").disabled, true);
+    complete(reply({ ok: true, presets: { new: { width: 1001, height: 1003, batch_size: 2 } } }));
+    await saving;
+    assert.equal(node.widget("preset_save").disabled, false);
+    assert.equal(node.widget("preset_delete").disabled, false);
+    node.widget("clamp_on_load").value = false;
+    node.widget("preset_load").callback();
+    assert.deepEqual([node.widget("width").value, node.widget("height").value], [1001, 1003]);
+  } finally { fetchOverride = null; }
+});
+
+test("initial GET resolving during a mutation is ignored until its POST result", async () => {
+  let resolveInitial;
+  let complete;
+  fetchOverride = (path, options) => new Promise((resolve) => {
+    if (options) complete = resolve;
+    else resolveInitial = resolve;
+  });
+  try {
+    const node = new Node();
+    node.widget("preset_name").value = "new";
+    const saving = node.widget("preset_save").callback();
+    resolveInitial(reply({ old: { width: 512, height: 768, batch_size: 1 } }));
+    await tick();
+    assert.deepEqual(clone(node.widget("preset_select").options.values), []);
+    complete(reply({ ok: true, presets: { new: { width: 1001, height: 1003, batch_size: 2 } } }));
+    await saving;
+    assert.deepEqual(clone(node.widget("preset_select").options.values), ["new"]);
+  } finally { fetchOverride = null; }
+});
+
+test("network failure restores mutation buttons and keeps the cached preset", async () => {
+  fetchOverride = (path, options) => {
+    if (options) throw new Error("network unavailable");
+    return reply({ keep: { width: 1001, height: 1003, batch_size: 1 } });
+  };
+  try {
+    const node = new Node();
+    await tick();
+    node.widget("preset_name").value = "failed";
+    await assert.rejects(node.widget("preset_save").callback(), /network unavailable/);
+    assert.equal(node.widget("preset_save").disabled, false);
+    assert.equal(node.widget("preset_delete").disabled, false);
+    assert.equal(node.widget("preset_select").value, "keep");
+    node.widget("clamp_on_load").value = false;
+    node.widget("preset_load").callback();
+    assert.deepEqual([node.widget("width").value, node.widget("height").value], [1001, 1003]);
+  } finally { fetchOverride = null; }
 });
